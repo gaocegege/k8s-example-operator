@@ -1,0 +1,7 @@
+version: "2"
+domain: example.com
+repo: github.com/gaocegege/k8s-example-operator
+resources:
+- group: example
+  version: v1beta1
+  kind: Application
