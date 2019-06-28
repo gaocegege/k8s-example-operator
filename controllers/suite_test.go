@@ -17,19 +17,28 @@ limitations under the License.
 package controllers
 
 import (
+	"context"
 	"path/filepath"
+	"sync"
 	"testing"
-
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
+	"time"
 
 	examplev1beta1 "github.com/gaocegege/k8s-example-operator/api/v1beta1"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -53,6 +62,7 @@ var _ = BeforeSuite(func(done Done) {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
+		// UseExistingCluster: true,
 		CRDDirectoryPaths: []string{filepath.Join("..", "config", "crd", "bases")},
 	}
 
@@ -69,6 +79,29 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(k8sClient).ToNot(BeNil())
 
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme.Scheme,
+	})
+	if err != nil {
+		panic(err)
+	}
+	println(mgr.GetScheme())
+
+	err = (&ApplicationReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("Application"),
+	}).SetupWithManager(mgr)
+	if err != nil {
+		panic(err)
+	}
+	stopMgr, mgrStopped := StartTestManager(mgr)
+
+	defer func() {
+		close(stopMgr)
+		mgrStopped.Wait()
+	}()
+
 	close(done)
 }, 60)
 
@@ -77,3 +110,45 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).ToNot(HaveOccurred())
 })
+
+var timeout = 15 * time.Second
+
+var _ = Describe("Test Main Function", func() {
+
+	It("should create the instance", func() {
+		By("Creating a Application")
+		instance := &examplev1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "foo",
+				Namespace: "default",
+			},
+			Spec: examplev1beta1.ApplicationSpec{},
+		}
+
+		// Create the Serving object and expect the Reconcile and Deployment to be created
+		err := k8sClient.Create(context.TODO(), instance)
+		if apierrors.IsInvalid(err) {
+			println("failed to create object, got an invalid object error: %v", err)
+			return
+		}
+		By("Ensuring the deployment")
+		deploy := &appsv1.Deployment{}
+		var depKey = types.NamespacedName{Name: "foo-deployment", Namespace: "default"}
+		Eventually(func() error { return k8sClient.Get(context.TODO(), depKey, deploy) }, timeout).
+			Should(Succeed())
+
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// StartTestManager adds recFn
+func StartTestManager(mgr manager.Manager) (chan struct{}, *sync.WaitGroup) {
+	stop := make(chan struct{})
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		Expect(mgr.Start(stop)).NotTo(HaveOccurred())
+	}()
+	return stop, wg
+}

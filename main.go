@@ -62,6 +62,7 @@ func main() {
 
 	err = (&controllers.ApplicationReconciler{
 		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 		Log:    ctrl.Log.WithName("controllers").WithName("Application"),
 	}).SetupWithManager(mgr)
 	if err != nil {
