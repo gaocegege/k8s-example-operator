@@ -48,6 +48,8 @@ import (
 var cfg *rest.Config
 var k8sClient client.Client
 var testEnv *envtest.Environment
+var stopMgr chan struct{}
+var mgrStopped *sync.WaitGroup
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -79,28 +81,18 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(k8sClient).ToNot(BeNil())
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
 	})
-	if err != nil {
-		panic(err)
-	}
-	println(mgr.GetScheme())
+	Expect(err).NotTo(HaveOccurred())
 
 	err = (&ApplicationReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Log:    ctrl.Log.WithName("controllers").WithName("Application"),
 	}).SetupWithManager(mgr)
-	if err != nil {
-		panic(err)
-	}
-	stopMgr, mgrStopped := StartTestManager(mgr)
-
-	defer func() {
-		close(stopMgr)
-		mgrStopped.Wait()
-	}()
+	Expect(err).NotTo(HaveOccurred())
+	stopMgr, mgrStopped = StartTestManager(mgr)
 
 	close(done)
 }, 60)
@@ -109,35 +101,38 @@ var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	err := testEnv.Stop()
 	Expect(err).ToNot(HaveOccurred())
+	close(stopMgr)
+	mgrStopped.Wait()
 })
 
 var timeout = 15 * time.Second
 
-var _ = Describe("Test Main Function", func() {
+var _ = Describe("[Just For Demo] Example Controller", func() {
+	Describe("Registering the controller", func() {
+		It("should create the instance successfully", func() {
+			By("Creating a Application")
+			instance := &examplev1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "foo",
+					Namespace: "default",
+				},
+				Spec: examplev1beta1.ApplicationSpec{},
+			}
 
-	It("should create the instance", func() {
-		By("Creating a Application")
-		instance := &examplev1beta1.Application{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "foo",
-				Namespace: "default",
-			},
-			Spec: examplev1beta1.ApplicationSpec{},
-		}
+			// Create the Serving object and expect the Reconcile and Deployment to be created
+			err := k8sClient.Create(context.TODO(), instance)
+			if apierrors.IsInvalid(err) {
+				println("failed to create object, got an invalid object error: %v", err)
+				return
+			}
+			By("Ensuring the deployment")
+			deploy := &appsv1.Deployment{}
+			var depKey = types.NamespacedName{Name: "foo-deployment", Namespace: "default"}
+			Eventually(func() error { return k8sClient.Get(context.TODO(), depKey, deploy) }, timeout).
+				Should(Succeed())
 
-		// Create the Serving object and expect the Reconcile and Deployment to be created
-		err := k8sClient.Create(context.TODO(), instance)
-		if apierrors.IsInvalid(err) {
-			println("failed to create object, got an invalid object error: %v", err)
-			return
-		}
-		By("Ensuring the deployment")
-		deploy := &appsv1.Deployment{}
-		var depKey = types.NamespacedName{Name: "foo-deployment", Namespace: "default"}
-		Eventually(func() error { return k8sClient.Get(context.TODO(), depKey, deploy) }, timeout).
-			Should(Succeed())
-
-		Expect(err).NotTo(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 })
 
